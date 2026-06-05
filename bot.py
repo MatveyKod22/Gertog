@@ -1,7 +1,7 @@
 import os
 import logging
-import asyncio
 import json
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, PreCheckoutQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -108,7 +108,6 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 Назад к товарам", callback_data="show_products")]
     ]
     
-    # Если есть картинка
     if product.get("photo_file_id"):
         await query.message.delete()
         await context.bot.send_photo(
@@ -470,6 +469,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЗАПУСК ==========
 def main():
+    # Создаём новый event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     app = Application.builder().token(BOT_TOKEN).build()
     
     # Пользовательские команды
@@ -495,6 +498,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input))
     
     print("🤖 Бот запущен! Товаров загружено:", len(products))
+    
+    # Запускаем с правильным event loop
     app.run_polling()
 
 if __name__ == "__main__":
