@@ -24,7 +24,20 @@ def save_products(products):
     with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
         json.dump(products, f, ensure_ascii=False, indent=2)
 
+# Загружаем товары
 products = load_products()
+
+# Если товаров нет - создаём товар по умолчанию (300 звёзд)
+if not products:
+    products["1700000000"] = {
+        "name": "VPN для игр с ботами",
+        "price": 300,
+        "emoji": "🎮",
+        "has_image": False,
+        "description": "Оптимизированный VPN для игр с ботами. Быстрое соединение, низкий пинг."
+    }
+    save_products(products)
+    print("✅ Создан товар по умолчанию: VPN для игр с ботами (300⭐)")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -221,13 +234,21 @@ async def create_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав")
         return
     
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Использование: `/tovar create 250 Название товара`", parse_mode="Markdown")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Использование: `/tovar create 250 Название товара`\n\n"
+            "Пример: `/tovar create 300 VPN для игр`",
+            parse_mode="Markdown"
+        )
         return
     
     try:
         price = int(context.args[0])
         name = " ".join(context.args[1:])
+        
+        if not name:
+            await update.message.reply_text("❌ Название товара не может быть пустым")
+            return
         
         import time
         product_id = str(int(time.time()))
@@ -250,8 +271,12 @@ async def create_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✏️ Редактировать: `/tovar edit {product_id}`",
             parse_mode="Markdown"
         )
-    except:
-        await update.message.reply_text("❌ Ошибка. Цена должна быть числом.")
+    except ValueError:
+        await update.message.reply_text(
+            "❌ **Ошибка:** Цена должна быть числом!\n\n"
+            "Пример: `/tovar create 300 VPN для игр`",
+            parse_mode="Markdown"
+        )
 
 async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.effective_user.id):
@@ -469,7 +494,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЗАПУСК ==========
 def main():
-    # Создаём новый event loop
+    # Создаём новый event loop для совместимости с Python 3.14
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
