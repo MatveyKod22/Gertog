@@ -2,10 +2,12 @@ import os
 import logging
 import json
 import asyncio
+import re
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, PreCheckoutQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 
 # ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
 app_flask = Flask(__name__)
@@ -25,6 +27,9 @@ ADMIN_CHAT_ID = 6068810451
 
 PRODUCTS_FILE = "products.json"
 
+# Хранилище для истории сообщений
+user_history = {}
+
 def load_products():
     if os.path.exists(PRODUCTS_FILE):
         with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
@@ -37,11 +42,13 @@ def save_products(products):
 
 products = load_products()
 
+# Товары по умолчанию
 if not products:
     products = {
-        "1": {"name": "🎮 Бравл Пасс+", "price": 350, "emoji": "🎮", "description": "Расширенный Бравл Пасс с бонусами"},
-        "2": {"name": "⚡ Бравл Пасс", "price": 250, "emoji": "⚡", "description": "Стандартный Бравл Пасс"},
-        "3": {"name": "👑 Про Пасс", "price": 750, "emoji": "👑", "description": "Максимальный Про Пасс"}
+        "1": {"name": "🎮 VPN для игр с ботами", "price": 300, "emoji": "🎮", "description": "Оптимизированный VPN для игр с ботами. Быстрое соединение, низкий пинг."},
+        "2": {"name": "🎮 Бравл Пасс+", "price": 350, "emoji": "🎮", "description": "Расширенный Бравл Пасс с бонусами"},
+        "3": {"name": "⚡ Бравл Пасс", "price": 250, "emoji": "⚡", "description": "Стандартный Бравл Пасс"},
+        "4": {"name": "👑 Про Пасс", "price": 750, "emoji": "👑", "description": "Максимальный Про Пасс"}
     }
     save_products(products)
 
@@ -63,33 +70,67 @@ async def create_one_time_link(context):
 async def is_admin(user_id):
     return user_id == ADMIN_CHAT_ID
 
+# Функция для сохранения истории
+def save_history(user_id, message_data):
+    if user_id not in user_history:
+        user_history[user_id] = []
+    user_history[user_id].append(message_data)
+    if len(user_history[user_id]) > 10:
+        user_history[user_id].pop(0)
+
+# Функция для получения предыдущего сообщения
+def get_previous(user_id):
+    if user_id in user_history and len(user_history[user_id]) > 1:
+        user_history[user_id].pop()
+        return user_history[user_id][-1]
+    return None
+
+# Функция для обработки премиум эмодзи
+def process_premium_emoji(text):
+    # Ищем премиум эмодзи в формате <tg-emoji emoji-id="...">...</tg-emoji>
+    pattern = r'<tg-emoji emoji-id="([^"]+)">([^<]+)</tg-emoji>'
+    
+    def replace_emoji(match):
+        emoji_id = match.group(1)
+        return f'<tg-emoji emoji-id="{emoji_id}">💎</tg-emoji>'
+    
+    return re.sub(pattern, replace_emoji, text)
+
 # ========== СТАРТ ==========
 async def start(update, context):
     user = update.effective_user
     text = f"👋 Привет, {user.first_name}!\n\n✅ **VPN Gertog**\n\n👇 Нажми кнопку:"
     keyboard = [[InlineKeyboardButton("🛍️ Меню товаров", callback_data="show_products")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    
+    if await is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
+    
+    message = await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    
+    save_history(user.id, {"text": text, "keyboard": keyboard, "callback": None})
 
 # ========== МЕНЮ ТОВАРОВ ==========
 async def show_products(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
     await query.answer()
     
     keyboard = []
     for pid, pdata in products.items():
-        keyboard.append([InlineKeyboardButton(f"{pdata['emoji']} {pdata['name']}", callback_data=f"product_{pid}")])
+        emoji_text = pdata['emoji']
+        keyboard.append([InlineKeyboardButton(f"{emoji_text} {pdata['name']}", callback_data=f"product_{pid}")])
     
-    keyboard.append([InlineKeyboardButton("👑 Админ-панель", callback_data="admin_panel")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
     
-    await query.edit_message_text(
-        "🛍️ **Наши товары:**",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
+    text = "🛍️ **Наши товары:**"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    
+    save_history(user_id, {"text": text, "keyboard": keyboard, "callback": "show_products"})
 
 # ========== ОПИСАНИЕ ТОВАРА ==========
 async def show_product(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
     product_id = query.data.split("_")[1]
     
     if product_id not in products:
@@ -102,7 +143,21 @@ async def show_product(update, context):
         [InlineKeyboardButton(f"💸 Оплатить {product['price']} звёзд", callback_data=f"buy_{product_id}")],
         [InlineKeyboardButton("🔙 Назад", callback_data="show_products")]
     ]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    
+    save_history(user_id, {"text": text, "keyboard": keyboard, "callback": f"product_{product_id}"})
+
+# ========== КНОПКА НАЗАД ==========
+async def back_to_start(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+    
+    prev = get_previous(user_id)
+    if prev:
+        await query.edit_message_text(prev["text"], reply_markup=InlineKeyboardMarkup(prev["keyboard"]), parse_mode=ParseMode.HTML)
+    else:
+        await start(update, context)
 
 # ========== ОПЛАТА ==========
 async def buy_product(update, context):
@@ -131,11 +186,10 @@ async def pre_checkout(update, context):
 
 async def successful_payment(update, context):
     user = update.effective_user
-    payment = update.message.successful_payment
     
     await context.bot.send_message(
         chat_id=ADMIN_CHAT_ID,
-        text=f"🟢 ПОКУПКА!\n👤 @{user.username or user.first_name}\n💰 {payment.total_amount}⭐"
+        text=f"🟢 ПОКУПКА!\n👤 @{user.username or user.first_name}\n💰 {update.message.successful_payment.total_amount}⭐"
     )
     
     link = await create_one_time_link(context)
@@ -144,9 +198,15 @@ async def successful_payment(update, context):
     else:
         await update.message.reply_text("❌ Ошибка, напишите @mefytron")
 
-# ========== АДМИН-ПАНЕЛЬ ==========
+# ========== АДМИН-ПАНЕЛЬ (ТОЛЬКО ДЛЯ АДМИНА) ==========
 async def admin_panel(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     
     keyboard = [
@@ -160,11 +220,19 @@ async def admin_panel(update, context):
     await query.edit_message_text(
         "🔧 **Админ-панель**",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode=ParseMode.HTML
     )
+    
+    save_history(user_id, {"text": "🔧 **Админ-панель**", "keyboard": keyboard, "callback": "admin_panel"})
 
 async def admin_list(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     
     text = "📋 **Товары:**\n\n"
@@ -172,21 +240,34 @@ async def admin_list(update, context):
         text += f"🆔 `{pid}` | {pdata['name']} | {pdata['price']}⭐\n"
     
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
 # ========== СОЗДАНИЕ ТОВАРА ==========
 async def admin_create_start(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     context.user_data["admin_action"] = "create_price"
     await query.edit_message_text(
         "💰 Введите цену товара (только число):",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")]]),
+        parse_mode=ParseMode.HTML
     )
 
 # ========== РЕДАКТИРОВАНИЕ ТОВАРА ==========
 async def admin_edit_menu(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     
     keyboard = []
@@ -201,6 +282,12 @@ async def admin_edit_menu(update, context):
 
 async def edit_select(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     product_id = query.data.split("_")[2]
     context.user_data["edit_product_id"] = product_id
     
@@ -217,25 +304,49 @@ async def edit_select(update, context):
 
 async def edit_price_start(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     context.user_data["admin_action"] = "edit_price"
     await query.edit_message_text("💰 Введите новую цену:")
 
 async def edit_name_start(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     context.user_data["admin_action"] = "edit_name"
     await query.edit_message_text("📝 Введите новое название:")
 
 async def edit_emoji_start(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     context.user_data["admin_action"] = "edit_emoji"
-    await query.edit_message_text("😀 Введите новый эмодзи (например, 🚀):")
+    await query.edit_message_text("😀 Введите новый эмодзи (обычный или премиум):")
 
 # ========== УДАЛЕНИЕ ТОВАРА ==========
 async def admin_delete_menu(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     
     keyboard = []
@@ -250,6 +361,12 @@ async def admin_delete_menu(update, context):
 
 async def delete_confirm(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     product_id = query.data.split("_")[2]
     name = products[product_id]["name"]
     del products[product_id]
@@ -260,6 +377,12 @@ async def delete_confirm(update, context):
 # ========== ВЫДАТЬ ДОСТУП ==========
 async def admin_setup_start(update, context):
     query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not await is_admin(user_id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
     await query.answer()
     context.user_data["admin_action"] = "setup"
     await query.edit_message_text(
@@ -269,7 +392,9 @@ async def admin_setup_start(update, context):
 
 # ========== ОБРАБОТЧИК ТЕКСТА ==========
 async def handle_text(update, context):
-    if not await is_admin(update.effective_user.id):
+    user_id = update.effective_user.id
+    
+    if not await is_admin(user_id):
         return
     
     action = context.user_data.get("admin_action")
@@ -279,7 +404,7 @@ async def handle_text(update, context):
             price = int(update.message.text.strip())
             context.user_data["temp_price"] = price
             context.user_data["admin_action"] = "create_name"
-            await update.message.reply_text("📝 Введите название товара (можно с эмодзи):")
+            await update.message.reply_text("📝 Введите название товара (можно с эмодзи и премиум-эмодзи):")
         except:
             await update.message.reply_text("❌ Ошибка! Введите число:")
     
@@ -296,7 +421,7 @@ async def handle_text(update, context):
         }
         save_products(products)
         context.user_data.clear()
-        await update.message.reply_text(f"✅ Товар создан! ID: `{product_id}`", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Товар создан! ID: `{product_id}`", parse_mode=ParseMode.HTML)
         await admin_panel(update, context)
     
     elif action == "edit_price":
@@ -364,6 +489,7 @@ def main():
     
     # Кнопки
     app.add_handler(CallbackQueryHandler(show_products, pattern="^show_products$"))
+    app.add_handler(CallbackQueryHandler(back_to_start, pattern="^back_to_start$"))
     app.add_handler(CallbackQueryHandler(show_product, pattern="^product_"))
     app.add_handler(CallbackQueryHandler(buy_product, pattern="^buy_"))
     
