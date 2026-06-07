@@ -2,7 +2,6 @@ import os
 import logging
 import json
 import asyncio
-import re
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
@@ -41,20 +40,41 @@ def save_products(products):
 
 products = load_products()
 
-# Товары по умолчанию (БЕЗ эмодзи вообще)
+# Товары по умолчанию
 if not products:
     products = {
-        "1": {"name": "VPN для игр с ботами", "price": 300, "display_name": "VPN для игр с ботами", "description": "Оптимизированный VPN для игр с ботами.", "auto": True},
-        "2": {"name": "Бравл Пасс+", "price": 350, "display_name": "Бравл Пасс+", "description": "Расширенный Бравл Пасс с бонусами", "auto": False},
-        "3": {"name": "Бравл Пасс", "price": 250, "display_name": "Бравл Пасс", "description": "Стандартный Бравл Пасс", "auto": False},
-        "4": {"name": "Про Пасс", "price": 750, "display_name": "Про Пасс", "description": "Максимальный Про Пасс", "auto": False}
+        "1": {"name": "VPN для игр с ботами", "price": 300, "description": "Оптимизированный VPN для игр с ботами.", "auto": True, "emoji_id": None},
+        "2": {"name": "Бравл Пасс+", "price": 350, "description": "Расширенный Бравл Пасс с бонусами", "auto": False, "emoji_id": None},
+        "3": {"name": "Бравл Пасс", "price": 250, "description": "Стандартный Бравл Пасс", "auto": False, "emoji_id": None},
+        "4": {"name": "Про Пасс", "price": 750, "description": "Максимальный Про Пасс", "auto": False, "emoji_id": None}
     }
     save_products(products)
-    print("✅ Созданы товары по умолчанию (без эмодзи)")
 
 logging.basicConfig(level=logging.INFO)
 
-# ========== ФУНКЦИИ ==========
+# ========== ФУНКЦИИ ДЛЯ ПРЕМИУМ-ЭМОДЗИ ==========
+def format_with_premium_emoji(name, emoji_id):
+    """Форматирует название с премиум-эмодзи для HTML"""
+    if emoji_id:
+        return f'<tg-emoji emoji-id="{emoji_id}">⭐</tg-emoji> {name}'
+    return name
+
+def extract_premium_emoji_from_message(message):
+    """Извлекает custom_emoji_id из сообщения"""
+    if not message.entities:
+        return message.text, None
+    
+    text = message.text
+    for entity in message.entities:
+        if entity.type == "custom_emoji":
+            # Возвращаем ID и очищенный текст
+            emoji_id = entity.custom_emoji_id
+            # Извлекаем текст без эмодзи
+            clean_text = text[:entity.offset] + text[entity.offset + entity.length:]
+            return clean_text.strip(), emoji_id
+    return message.text, None
+
+# ========== ФУНКЦИИ БОТА ==========
 async def create_one_time_link(context):
     try:
         invite_link = await context.bot.create_chat_invite_link(
@@ -77,51 +97,6 @@ def save_history(user_id, message_data):
     if len(user_history[user_id]) > 10:
         user_history[user_id].pop(0)
 
-def get_previous(user_id):
-    if user_id in user_history and len(user_history[user_id]) > 1:
-        user_history[user_id].pop()
-        return user_history[user_id][-1]
-    return None
-
-# Функция для извлечения премиум-эмодзи из сообщения
-def extract_premium_emoji(message):
-    """Извлекает custom_emoji_id и форматирует текст с тегом"""
-    if not message.entities:
-        return message.text, None
-    
-    text = message.text
-    result_text = ""
-    last_offset = 0
-    
-    for entity in message.entities:
-        if entity.type == "custom_emoji":
-            if entity.offset > last_offset:
-                result_text += text[last_offset:entity.offset]
-            emoji_char = text[entity.offset:entity.offset + entity.length]
-            result_text += f'<tg-emoji emoji-id="{entity.custom_emoji_id}">{emoji_char}</tg-emoji>'
-            last_offset = entity.offset + entity.length
-        elif entity.type == "bold":
-            if entity.offset > last_offset:
-                result_text += text[last_offset:entity.offset]
-            result_text += f"<b>{text[entity.offset:entity.offset + entity.length]}</b>"
-            last_offset = entity.offset + entity.length
-        elif entity.type == "italic":
-            if entity.offset > last_offset:
-                result_text += text[last_offset:entity.offset]
-            result_text += f"<i>{text[entity.offset:entity.offset + entity.length]}</i>"
-            last_offset = entity.offset + entity.length
-    
-    if last_offset < len(text):
-        result_text += text[last_offset:]
-    
-    return result_text, True
-
-# Функция для очистки HTML-тегов
-def clean_html(text):
-    clean = re.sub(r'<tg-emoji[^>]*>([^<]+)</tg-emoji>', r'\1', text)
-    clean = re.sub(r'<[^>]+>', '', clean)
-    return clean
-
 # ========== СТАРТ ==========
 async def start(update, context):
     user = update.effective_user
@@ -140,16 +115,14 @@ async def show_products(update, context):
     
     keyboard = []
     for pid, pdata in products.items():
-        display_name = pdata.get('display_name', pdata['name'])
+        # Форматируем название с эмодзи, если есть
+        display_name = format_with_premium_emoji(pdata['name'], pdata.get('emoji_id'))
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"product_{pid}")])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
     
-    await query.edit_message_text(
-        "🛍️ <b>Наши товары:</b>",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.HTML
-    )
+    text = "🛍️ <b>Наши товары:</b>"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
 # ========== ОПИСАНИЕ ТОВАРА ==========
 async def show_product(update, context):
@@ -161,7 +134,7 @@ async def show_product(update, context):
         return
     
     product = products[product_id]
-    display_name = product.get('display_name', product['name'])
+    display_name = format_with_premium_emoji(product['name'], product.get('emoji_id'))
     
     text = f"{display_name}\n\n📝 {product['description']}\n\n💰 Цена: <b>{product['price']} звёзд</b>"
     keyboard = [
@@ -173,7 +146,15 @@ async def show_product(update, context):
 async def back_to_start(update, context):
     query = update.callback_query
     await query.answer()
-    await start(update, context)
+    
+    user = query.from_user
+    text = f"👋 Привет, {user.first_name}!\n\n✅ <b>VPN Gertog</b>\n\n👇 Нажми кнопку:"
+    keyboard = [[InlineKeyboardButton("🛍️ Меню товаров", callback_data="show_products")]]
+    
+    if await is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
 # ========== ОПЛАТА ==========
 async def buy_product(update, context):
@@ -184,12 +165,12 @@ async def buy_product(update, context):
     try:
         await context.bot.send_invoice(
             chat_id=query.from_user.id,
-            title=clean_html(product.get('display_name', product['name'])),
+            title=product["name"],
             description=product["description"],
             payload=f"product_{product_id}",
             provider_token="",
             currency="XTR",
-            prices=[LabeledPrice(label=clean_html(product.get('display_name', product['name'])), amount=product["price"])],
+            prices=[LabeledPrice(label=product["name"], amount=product["price"])],
             start_parameter=f"buy_{product_id}"
         )
         await query.answer()
@@ -253,8 +234,8 @@ async def admin_list(update, context):
     text = "📋 <b>Товары:</b>\n\n"
     for pid, pdata in products.items():
         auto_text = "✅ авто" if pdata.get("auto", True) else "👤 ручная"
-        clean_name = clean_html(pdata.get('display_name', pdata['name']))
-        text += f"🆔 <code>{pid}</code> | {clean_name} | {pdata['price']}⭐ | {auto_text}\n"
+        emoji_text = "⭐" if pdata.get('emoji_id') else "❌"
+        text += f"🆔 <code>{pid}</code> | {pdata['name']} | {pdata['price']}⭐ | {auto_text} | эмодзи: {emoji_text}\n"
     
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -281,11 +262,11 @@ async def admin_edit_menu(update, context):
     await query.answer()
     keyboard = []
     for pid, pdata in products.items():
-        clean_name = clean_html(pdata.get('display_name', pdata['name']))
-        keyboard.append([InlineKeyboardButton(clean_name, callback_data=f"edit_select_{pid}")])
+        display_name = format_with_premium_emoji(pdata['name'], pdata.get('emoji_id'))
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"edit_select_{pid}")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
     
-    await query.edit_message_text("✏️ Выберите товар:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text("✏️ Выберите товар:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
 async def edit_select(update, context):
     query = update.callback_query
@@ -296,15 +277,19 @@ async def edit_select(update, context):
     product_id = query.data.split("_")[2]
     context.user_data["edit_product_id"] = product_id
     product = products[product_id]
+    has_emoji = "да" if product.get('emoji_id') else "нет"
     
     keyboard = [
         [InlineKeyboardButton("💰 Изменить цену", callback_data="edit_price")],
         [InlineKeyboardButton("📝 Изменить название", callback_data="edit_name")],
+        [InlineKeyboardButton("😀 Изменить эмодзи", callback_data="edit_emoji")],
         [InlineKeyboardButton("🔄 Изменить тип", callback_data="edit_activation")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_menu")]
     ]
     await query.edit_message_text(
-        f"✏️ Редактирование: {product['name']}\nТип: {'авто' if product.get('auto', True) else 'ручная'}",
+        f"✏️ Редактирование: {product['name']}\n"
+        f"Тип: {'авто' if product.get('auto', True) else 'ручная'}\n"
+        f"Премиум-эмодзи: {has_emoji}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -326,7 +311,21 @@ async def edit_name_start(update, context):
     
     await query.answer()
     context.user_data["admin_action"] = "edit_name"
-    await query.edit_message_text("📝 Отправьте новое название (можно с премиум-эмодзи):")
+    await query.edit_message_text("📝 Введите новое название:")
+
+async def edit_emoji_start(update, context):
+    query = update.callback_query
+    if not await is_admin(query.from_user.id):
+        await query.answer("❌ Нет доступа", show_alert=True)
+        return
+    
+    await query.answer()
+    context.user_data["admin_action"] = "edit_emoji"
+    await query.edit_message_text(
+        "😀 Отправьте сообщение с премиум-эмодзи, который хотите использовать.\n\n"
+        "Просто отправьте сам эмодзи (например, 🔥, 🎮, 👑) или премиум-эмодзи.\n\n"
+        "Чтобы удалить эмодзи, отправьте /remove"
+    )
 
 async def edit_activation_start(update, context):
     query = update.callback_query
@@ -339,8 +338,8 @@ async def edit_activation_start(update, context):
     current = products[product_id].get("auto", True)
     
     keyboard = [
-        [InlineKeyboardButton("✅ Автоматическая", callback_data="edit_activation_auto")],
-        [InlineKeyboardButton("👤 Ручная", callback_data="edit_activation_manual")],
+        [InlineKeyboardButton("✅ Автоматическая (ссылка сразу)", callback_data="edit_activation_auto")],
+        [InlineKeyboardButton("👤 Ручная (к менеджеру)", callback_data="edit_activation_manual")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_menu")]
     ]
     await query.edit_message_text(
@@ -370,11 +369,11 @@ async def admin_delete_menu(update, context):
     await query.answer()
     keyboard = []
     for pid, pdata in products.items():
-        clean_name = clean_html(pdata.get('display_name', pdata['name']))
-        keyboard.append([InlineKeyboardButton(f"❌ {clean_name}", callback_data=f"delete_confirm_{pid}")])
+        display_name = format_with_premium_emoji(pdata['name'], pdata.get('emoji_id'))
+        keyboard.append([InlineKeyboardButton(f"❌ {display_name}", callback_data=f"delete_confirm_{pid}")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
     
-    await query.edit_message_text("🗑️ Выберите товар для удаления:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text("🗑️ Выберите товар для удаления:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
 async def delete_confirm(update, context):
     query = update.callback_query
@@ -397,7 +396,7 @@ async def admin_setup_start(update, context):
     
     await query.answer()
     context.user_data["admin_action"] = "setup"
-    await query.edit_message_text("🔑 Введите ID или @username:")
+    await query.edit_message_text("🔑 Введите ID пользователя или @username:")
 
 # ========== ОБРАБОТЧИК ТЕКСТА ==========
 async def handle_text(update, context):
@@ -408,6 +407,16 @@ async def handle_text(update, context):
         return
     
     action = context.user_data.get("admin_action")
+    
+    # Специальная команда для удаления эмодзи
+    if message.text == "/remove" and action == "edit_emoji":
+        product_id = context.user_data.get("edit_product_id")
+        products[product_id]["emoji_id"] = None
+        save_products(products)
+        context.user_data.clear()
+        await message.reply_text("✅ Премиум-эмодзи удалён!")
+        await admin_panel(update, context)
+        return
     
     if action == "create_price":
         try:
@@ -440,15 +449,38 @@ async def handle_text(update, context):
             await message.reply_text("❌ Ошибка! Введите число:")
     
     elif action == "edit_name":
-        display_name, has_emoji = extract_premium_emoji(message)
-        clean_name = clean_html(display_name)
-        
+        new_name = message.text.strip()
         product_id = context.user_data.get("edit_product_id")
-        products[product_id]["display_name"] = display_name
-        products[product_id]["name"] = clean_name
+        products[product_id]["name"] = new_name
         save_products(products)
         context.user_data.clear()
-        await message.reply_text(f"✅ Название изменено на: {display_name}", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"✅ Название изменено на «{new_name}»")
+        await admin_panel(update, context)
+    
+    elif action == "edit_emoji":
+        # Извлекаем премиум-эмодзи из сообщения
+        clean_name, emoji_id = extract_premium_emoji_from_message(message)
+        product_id = context.user_data.get("edit_product_id")
+        
+        if emoji_id:
+            products[product_id]["emoji_id"] = emoji_id
+            # Обновляем название, если пользователь написал текст
+            if clean_name and clean_name.strip():
+                products[product_id]["name"] = clean_name.strip()
+            save_products(products)
+            await message.reply_text(f"✅ Премиум-эмодзи добавлен к товару!")
+        else:
+            # Если обычный эмодзи или текст, пробуем как обычный эмодзи
+            emoji_char = message.text.strip()
+            if len(emoji_char) <= 2 and ord(emoji_char[0]) > 127:  # Проверка на эмодзи
+                products[product_id]["emoji_id"] = None
+                products[product_id]["name"] = emoji_char + " " + products[product_id]["name"]
+                save_products(products)
+                await message.reply_text(f"✅ Обычный эмодзи добавлен: {emoji_char}")
+            else:
+                await message.reply_text("❌ Не удалось распознать эмодзи. Отправьте премиум-эмодзи или обычный эмодзи.")
+        
+        context.user_data.clear()
         await admin_panel(update, context)
     
     elif action == "setup":
@@ -484,7 +516,9 @@ async def create_activation_type(update, context):
     context.user_data["admin_action"] = "create_name"
     
     await query.edit_message_text(
-        "📝 Отправьте название товара (можно с премиум-эмодзи):",
+        "📝 Введите название товара (можно с премиум-эмодзи):\n\n"
+        "Просто отправьте название, а если хотите добавить премиум-эмодзи, отправьте его вместе с названием.\n\n"
+        "Пример: 🔥 Премиум доступ",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")]])
     )
 
@@ -496,12 +530,16 @@ def main():
     
     app = Application.builder().token(BOT_TOKEN).build()
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
+    
+    # Кнопки
     app.add_handler(CallbackQueryHandler(show_products, pattern="^show_products$"))
     app.add_handler(CallbackQueryHandler(back_to_start, pattern="^back_to_start$"))
     app.add_handler(CallbackQueryHandler(show_product, pattern="^product_"))
     app.add_handler(CallbackQueryHandler(buy_product, pattern="^buy_"))
     
+    # Админ-панель
     app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     app.add_handler(CallbackQueryHandler(admin_list, pattern="^admin_list$"))
     app.add_handler(CallbackQueryHandler(admin_create_start, pattern="^admin_create$"))
@@ -511,13 +549,17 @@ def main():
     app.add_handler(CallbackQueryHandler(edit_select, pattern="^edit_select_"))
     app.add_handler(CallbackQueryHandler(edit_price_start, pattern="^edit_price$"))
     app.add_handler(CallbackQueryHandler(edit_name_start, pattern="^edit_name$"))
+    app.add_handler(CallbackQueryHandler(edit_emoji_start, pattern="^edit_emoji$"))
     app.add_handler(CallbackQueryHandler(edit_activation_start, pattern="^edit_activation$"))
     app.add_handler(CallbackQueryHandler(edit_activation_confirm, pattern="^edit_activation_"))
     app.add_handler(CallbackQueryHandler(delete_confirm, pattern="^delete_confirm_"))
     app.add_handler(CallbackQueryHandler(create_activation_type, pattern="^create_type_"))
     
+    # Платежи
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    
+    # Текст
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     print("🤖 Бот запущен! Товаров:", len(products))
